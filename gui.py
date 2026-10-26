@@ -27,16 +27,42 @@ class App(tk.Tk):
         self.minsize(840, 700)
         self.q: queue.Queue = queue.Queue()
         self.busy = False
+        self.adapters: list = []
+        self._alias_added = None
         self._build()
         self._drain()
         self.log(f"Data folder: {core.data_dir()}")
         self.log("Step 1: plug this computer into the modem by Ethernet.")
-        self.log("Step 2: click Test Connection.")
+        self.log("Step 2: check the adapter at the top, then Test Connection.")
         self.log("Step 3: set the port number and click Capture Port.\n")
+        # Enumerating adapters shells out, so do it once the window is up.
+        self.after(50, self.on_refresh_adapters)
 
     # ---------------------------------------------------------------- layout
     def _build(self):
         pad = {"padx": 6, "pady": 4}
+
+        net = ttk.LabelFrame(self, text="Network adapter")
+        net.pack(fill="x", **pad)
+        ttk.Label(net, text="Plugged into the modem:").grid(
+            row=0, column=0, sticky="e", **pad)
+        self.adapter = tk.StringVar()
+        self.adapter_box = ttk.Combobox(net, textvariable=self.adapter,
+                                        state="readonly", width=58)
+        self.adapter_box.grid(row=0, column=1, sticky="w", **pad)
+        self.btn_refresh = ttk.Button(net, text="Refresh",
+                                      command=self.on_refresh_adapters)
+        self.btn_refresh.grid(row=0, column=2, sticky="w", **pad)
+        self.route_note = tk.StringVar(value="checking which adapter is in use...")
+        ttk.Label(net, textvariable=self.route_note).grid(
+            row=1, column=1, sticky="w", **pad)
+        self.btn_fix = ttk.Button(net, text="Fix Routing...",
+                                  command=self.on_fix_routing, state="disabled")
+        self.btn_fix.grid(row=1, column=2, sticky="w", **pad)
+        # Re-check on selection: picking an adapter does not change anything by
+        # itself, it only tells us what to compare the routing table against.
+        self.adapter_box.bind("<<ComboboxSelected>>",
+                              lambda _e: self._spawn(self._check_route))
 
         modem = ttk.LabelFrame(self, text="Modem")
         modem.pack(fill="x", **pad)
@@ -140,7 +166,8 @@ class App(tk.Tk):
     def _set_busy(self, busy, status="ready"):
         self.busy = busy
         state = "disabled" if busy else "normal"
-        for b in (self.btn_probe, self.btn_cap, self.btn_rank):
+        for b in (self.btn_probe, self.btn_cap, self.btn_rank,
+                  self.btn_refresh):
             b.configure(state=state)
         self.status.set(status)
 
@@ -176,17 +203,133 @@ class App(tk.Tk):
             ))
         return chain
 
+    # ------------------------------------------------------------- adapters
+    def selected_adapter(self):
+        """The adapter dict behind the current dropdown text, or None."""
+        vals = list(self.adapter_box.cget("values"))
+        cur = self.adapter.get()
+        if cur in vals:
+            i = vals.index(cur)
+            if i < len(self.adapters):
+                return self.adapters[i]
+        return None
+
+    def on_refresh_adapters(self):
+        """Re-enumerate. Worth a button: USB adapters come and go, and an
+        unplugged one stops existing entirely rather than merely going down."""
+        def job():
+            found = core.list_adapters()
+
+            def apply():
+                self.adapters = found
+                vals = [core.adapter_label(a, compact=True) for a in found]
+                self.adapter_box.configure(values=vals)
+                if vals and self.adapter.get() not in vals:
+                    self.adapter.set(vals[0])   # ordered best-candidate-first
+                if not found:
+                    self.route_note.set(
+                        "could not list adapters on this platform")
+
+            self.after(0, apply)
+            self._check_route()
+
+        self._spawn(job)
+
+    def _check_route(self):
+        """Say which interface the OS will really use, and flag a mismatch.
+
+        This is the whole point of the picker: choosing an adapter here changes
+        nothing on its own, because the routing table decides. All we can do is
+        show the user when their choice and the routing table disagree.
+        """
+        base = self.url.get().strip()
+        want = self.selected_adapter()
+        route = core.route_interface(base)
+        host = core.host_from_base(base)
+
+        def apply():
+            if not route:
+                self.route_note.set(
+                    f"could not tell which interface reaches {host}")
+                self.btn_fix.configure(state="disabled")
+            elif want and route == want["name"]:
+                self.route_note.set(
+                    f"modem traffic uses {route} - matches your selection")
+                self.btn_fix.configure(state="disabled")
+            elif want:
+                self.route_note.set(
+                    f"modem traffic uses {route}, not {want['name']} - "
+                    "click Fix Routing")
+                self.btn_fix.configure(state="normal")
+            else:
+                self.route_note.set(f"modem traffic uses {route}")
+                self.btn_fix.configure(state="disabled")
+
+        self.after(0, apply)
+
+    def on_fix_routing(self):
+        a = self.selected_adapter()
+        if not a:
+            return
+        if core.alias_conflict(self.adapters):
+            messagebox.showwarning(
+                "Address already in use",
+                "Something on this computer already uses the "
+                f"{core.ALIAS_IP.rsplit('.', 1)[0]}.x range.\n\n"
+                "Fixing the route automatically could make things ambiguous. "
+                "Please do it by hand instead:\n\n"
+                + core.alias_hint(a["name"]))
+            return
+        add = core.alias_command(a["name"], True)
+        undo = core.alias_command(a["name"], False)
+        if not messagebox.askokcancel(
+                "Fix routing",
+                f"This gives {a['name']} a fixed address inside the modem's own "
+                "range, which pins modem traffic to it.\n\n"
+                + " ".join(add)
+                + "\n\nYou will be asked for your password.\n\n"
+                "To undo it when the survey is finished:\n\n"
+                + " ".join(undo)):
+            return
+
+        def job():
+            self.log("-" * 60)
+            self.log("fixing routing: " + " ".join(add))
+            ok, msg = core.run_elevated(add)
+            if not ok:
+                self.log(f"not applied -- {msg or 'cancelled'}")
+                self.log("You can run this yourself in a terminal:\n")
+                self.log(core.alias_hint(a["name"]))
+                return
+            self._alias_added = a["name"]
+            self.log(f"applied. When the survey is finished, undo it with:")
+            self.log(f"    {' '.join(undo)}")
+            self._check_route()
+
+        self._spawn(job)
+
     # -------------------------------------------------------------- actions
     def on_probe(self):
         def job():
             base = self.url.get().strip()
             self.log("-" * 60)
+            # A probe that left over Wi-Fi was never going to reach the modem,
+            # and that is worth knowing before any other result.
+            iface = core.route_interface(base)
+            want = self.selected_adapter()
+            mismatch = want and iface and iface != want["name"]
+            self.log(f"interface : {iface or 'unknown'}"
+                     + (f"   <-- not {want['name']}, the adapter you picked"
+                        if mismatch else ""))
             ok, err = core.reachable(base)
             self.log(f"reachable : {'yes' if ok else 'NO (' + err + ')'}")
             if not ok:
+                if mismatch:
+                    self.log("\nThe modem is not on the adapter you selected. "
+                             "Try Fix Routing.")
                 self.log("\nThat is a valid result -- this port has no signal.")
                 self.log("To tell a dead outlet from a weak one, optionally run:\n")
-                self.log(core.alias_hint())
+                self.log(core.alias_hint(want["name"] if want else None))
                 return
             sess = core.Hnap(base, self.user.get().strip(), self.pw.get())
             ch, pk, _, _ = sess.challenge()

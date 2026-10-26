@@ -2,7 +2,8 @@
 """Command-line interface for the coax survey tool.
 
 FIRST, before moving any hardware:
-    python3 modem_capture.py --probe
+    python3 modem_capture.py --setup     # pick the adapter, confirm the modem
+    python3 modem_capture.py --probe     # test connectivity and login
 
 Then once per coax port:
     python3 modem_capture.py            # prompts for port + splitter details
@@ -19,6 +20,7 @@ shell history and the process list.
 import argparse
 import getpass
 import os
+import subprocess
 import sys
 from datetime import datetime
 
@@ -79,6 +81,128 @@ def prompt_splitters():
     return chain
 
 
+def prompt_adapter(adapters):
+    """Ask which adapter is plugged into the modem.
+
+    The list is already ordered best-candidate-first, so pressing Enter picks
+    the wired adapter with a live link -- which is the right answer nearly
+    every time someone runs this.
+    """
+    print("\n  Which adapter is plugged into the modem?")
+    for i, a in enumerate(adapters, 1):
+        print(f"    {i}) {core.adapter_label(a)}")
+    raw = ask("  select [1]: ", "1")
+    try:
+        i = int(raw) - 1
+        if not 0 <= i < len(adapters):
+            raise ValueError
+    except ValueError:
+        i = 0
+    return adapters[i]
+
+
+def run_admin(cmd):
+    """Run an admin command on the user's own terminal.
+
+    Deliberately not captured: sudo needs a tty to ask for the password, and
+    the user should see exactly what ran.
+    """
+    print(f"\n  running: {' '.join(cmd)}")
+    try:
+        rc = subprocess.call(cmd)
+    except Exception as e:
+        print(f"  could not run it: {e}")
+        return False
+    if rc != 0:
+        print("  that command did not succeed -- nothing was changed")
+    return rc == 0
+
+
+def do_setup(args):
+    """Choose an adapter, make the routing match it, confirm the modem answers.
+
+    Returns 0 once the modem is reachable, 2 if it is not. 2 is not
+    necessarily a failure: an outlet with no signal is a real survey result.
+    """
+    print("=== connection setup ===")
+    adapters = core.list_adapters()
+    if not adapters:
+        print("\nCould not list adapters on this platform. Falling back to a")
+        print("plain reachability check.\n")
+        ok, err = core.reachable(args.base_url)
+        print(f"modem at {core.host_from_base(args.base_url)} : "
+              f"{'answers' if ok else 'no answer (' + err + ')'}")
+        return 0 if ok else 2
+
+    chosen = (core.find_adapter(args.adapter, adapters)
+              if args.adapter else prompt_adapter(adapters))
+    if chosen is None:
+        print(f"\nNo adapter matching {args.adapter!r}. Available:")
+        for a in adapters:
+            print(f"    {a['name']:<8} {a['mac'] or '-':<18} {a['label']}")
+        return 2
+
+    host = core.host_from_base(args.base_url)
+    print(f"\n  chosen: {chosen['name']}  ({chosen['label']})")
+    if chosen["mac"]:
+        # Worth noting down: a USB adapter can return as a different enN.
+        print(f"  hardware address: {chosen['mac']}"
+              f"   (--adapter {chosen['mac']} always finds it)")
+    if not chosen["up"] and not chosen["wireless"]:
+        print("\n  Note: that adapter has no link. Check both ends of the")
+        print("  Ethernet cable -- it must go to the MODEM, not the router.")
+
+    # Does the routing table agree with the user?
+    rep = core.adapter_report(args.base_url, want=chosen["name"])
+    lbl_route, lbl_want = f"traffic to {host} leaves over", "but you chose"
+    w = max(len(lbl_route), len(lbl_want))
+    print(f"\n  {lbl_route:<{w}} : {rep['route'] or 'unknown'}")
+
+    if rep["route"] and not rep["route_matches"]:
+        print(f"  {lbl_want:<{w}} : {chosen['name']}")
+        print("\n  Those don't match, so the modem will not be seen. This is")
+        print("  normal at an outlet with no signal: with no connection the")
+        print("  modem hands out no address, so there is no route to it and")
+        print("  the request goes out your default connection instead.")
+        if rep["conflict"]:
+            print(f"\n  WARNING: something already uses the {core.ALIAS_IP.rsplit('.', 1)[0]}.x")
+            print("  range on this machine. Fixing the route automatically could")
+            print("  make things ambiguous -- do this by hand instead:\n")
+            print(core.alias_hint(chosen["name"]))
+            return 2
+
+        print("\n  This can be fixed by giving the adapter a fixed address in")
+        print("  the modem's own range, which pins modem traffic to it.")
+        print("  It needs your admin password, and it is undone in one command.")
+        print(f"\n    {' '.join(core.alias_command(chosen['name'], True))}")
+        if not ask("\n  Run that now? [y/N]: ", "n").lower().startswith("y"):
+            print("\n  Left alone. Two other options:")
+            print("    - run the command above yourself")
+            print("    - turn Wi-Fi off, so Ethernet is the only route")
+            return 2
+        if not run_admin(core.alias_command(chosen["name"], True)):
+            return 2
+        args._alias_added = chosen["name"]
+        rep = core.adapter_report(args.base_url, want=chosen["name"])
+        print(f"\n  {lbl_route:<{w}} : {rep['route'] or 'unknown'}  (after the fix)")
+
+    # Final word: can we actually talk to it?
+    print(f"\n  modem at {host} : "
+          f"{'answers' if rep['reachable'] else 'no answer'}")
+    if rep["reachable"]:
+        print("\n  Ready. Next:  python3 modem_capture.py --probe")
+    else:
+        print(f"  ({rep['error']})")
+        print("\n  The adapter is set up correctly but nothing answered. If the")
+        print("  cable is in the modem and the modem has settled for 2-3")
+        print("  minutes, this outlet has no signal -- which is a real result.")
+        print("  Capture it anyway; the tool records 'no signal'.")
+    if getattr(args, "_alias_added", None):
+        print(f"\n  When the survey is finished, undo the address with:")
+        print(f"    {' '.join(core.alias_command(args._alias_added, False))}")
+    return 0 if rep["reachable"] else 2
+
+
 def get_password(args, required=True):
     if args.password_stdin:
         return sys.stdin.readline().rstrip("\n")
@@ -89,12 +213,16 @@ def get_password(args, required=True):
 
 
 def do_probe(args):
+    # Name the interface first: a probe that went out over Wi-Fi was never
+    # going to reach the modem, and that is worth knowing before anything else.
+    print(f"interface   : {core.route_interface(args.base_url) or 'unknown'}")
     ok, err = core.reachable(args.base_url)
     print(f"reachable   : {'yes' if ok else 'NO  (' + err + ')'}")
     if not ok:
         print("\nThat is a valid survey result -- this port has no signal.")
-        print("To tell a dead outlet from a weak one, you can optionally give")
-        print("this machine an address in the modem's subnet:\n")
+        print("If you expected signal, check which adapter is being used:")
+        print("    python3 modem_capture.py --setup")
+        print("\nOr give this machine an address in the modem's subnet:\n")
         print(core.alias_hint())
         return 2
 
@@ -203,6 +331,10 @@ def build_parser():
     ap.add_argument("--note", default=None, help="location note (prompts if omitted)")
     ap.add_argument("--skip-splitter", action="store_true",
                     help="skip the splitter questions for this run")
+    ap.add_argument("--setup", action="store_true",
+                    help="choose a network adapter and confirm the modem is seen")
+    ap.add_argument("--adapter", default=None,
+                    help="adapter name for --setup, skipping the prompt (e.g. en5)")
     ap.add_argument("--probe", action="store_true", help="test connectivity/auth only")
     ap.add_argument("--rank", action="store_true", help="compare logged ports")
     ap.add_argument("--gui", action="store_true", help="launch the graphical version")
@@ -223,6 +355,8 @@ def main(argv=None):
         return gui.run()
     if args.rank:
         return do_rank()
+    if args.setup or args.adapter:
+        return do_setup(args)
     if args.probe:
         return do_probe(args)
     return do_capture(args)

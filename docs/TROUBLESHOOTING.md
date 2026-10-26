@@ -8,18 +8,32 @@
 reachable : NO  (urlopen error ... Network is unreachable)
 ```
 
-Work down this list:
+**Start here:**
+
+```sh
+python3 modem_capture.py --setup
+```
+
+That lists your adapters, tells you which one your computer is *actually*
+sending modem traffic over, and offers to correct it. Most of this page is
+the manual version of what that command does for you.
+
+Then work down this list:
 
 1. **Is the Ethernet cable plugged into the modem, not the router?**
    This is the most common mistake. The cable must go from your computer
    *directly* to the modem.
 2. **Are you on Wi-Fi?** Turn Wi-Fi off. Your computer may be preferring it
-   and ignoring the Ethernet cable entirely.
+   and ignoring the Ethernet cable entirely. `--setup` shows you when this
+   is happening — it prints the interface in use, and `--probe` now does too.
 3. **Is the modem powered on and settled?** Give it 2–3 minutes after
    plugging in.
 4. **Does this outlet actually have signal?** If you've moved to a new
    outlet and get nothing, that may simply be the answer — the outlet is dead.
    Capture it anyway; the tool records "no signal", which is a real result.
+5. **Did your USB adapter change name?** Unplugging a USB Ethernet adapter
+   can bring it back as a different `enN`. Pin it by hardware address
+   instead: `--adapter a0:ce:c8:e3:bd:97`.
 
 ### Telling a dead outlet from a weak one
 
@@ -31,13 +45,17 @@ computer gets no network address, which means it can't reach the modem's
 status page either. Giving your computer a fixed address in the modem's own
 range works around that.
 
+`python3 modem_capture.py --setup` will offer to do this for you, with the
+right adapter name filled in. To do it by hand:
+
 **Mac:**
 ```sh
 sudo ifconfig en5 alias 192.168.100.10 255.255.255.0
 # undo when finished:
 sudo ifconfig en5 -alias 192.168.100.10
 ```
-Replace `en5` with your adapter — find it with `ifconfig | grep -B3 ether`.
+Replace `en5` with your adapter — `--setup` names it, or find it with
+`networksetup -listallhardwareports`.
 
 **Windows** (Command Prompt as Administrator):
 ```

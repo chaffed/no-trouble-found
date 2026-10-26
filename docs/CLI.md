@@ -12,15 +12,75 @@ cd no-trouble-found
 
 ---
 
-## The three commands
+## The four commands
 
 ```sh
+python3 modem_capture.py --setup     # pick which network adapter to use
 python3 modem_capture.py --probe     # check you can reach and log into the modem
 python3 modem_capture.py             # capture one port (asks you questions)
 python3 modem_capture.py --rank      # compare everything captured so far
 ```
 
-Run `--probe` first, before you move any hardware.
+Run `--setup` then `--probe` first, before you move any hardware.
+
+---
+
+## Choosing the network adapter
+
+The tool doesn't pick an interface — it asks for `https://192.168.100.1` and
+your operating system decides which adapter carries that. Usually that's the
+Ethernet adapter you plugged into the modem. Sometimes it isn't, and then
+nothing works for a reason that isn't visible anywhere.
+
+`--setup` makes the decision visible and fixes it:
+
+```
+$ python3 modem_capture.py --setup
+=== connection setup ===
+
+  Which adapter is plugged into the modem?
+    1) en5     USB 10/100/1000 LAN          link up  192.168.100.11
+    2) en0     Wi-Fi                        link up  192.168.50.222    (wireless)
+  select [1]:
+
+  chosen: en5  (USB 10/100/1000 LAN)
+  hardware address: a0:ce:c8:e3:bd:97   (--adapter a0:ce:c8:e3:bd:97 always finds it)
+
+  traffic to 192.168.100.1 leaves over : en5
+
+  modem at 192.168.100.1 : answers
+
+  Ready. Next:  python3 modem_capture.py --probe
+```
+
+The list is ordered best-guess first — a plugged-in wired adapter beats
+everything — so pressing Enter is normally right.
+
+### When the adapter you chose isn't the one being used
+
+`--setup` says so, and offers to fix it by giving that adapter a fixed
+address inside the modem's own range. That creates a route which outranks
+your default connection, pinning modem traffic to the adapter you picked.
+
+**This needs an admin password, and a normal survey never reaches it** — at
+an outlet with no signal, "no signal" is already the answer you came for. It
+only matters when you want to tell a *dead* outlet from a *weak* one, because
+with no connection the modem issues no address and its status page becomes
+unreachable too.
+
+Nothing is changed without asking, the exact command is shown first, and the
+one-line undo is printed when the survey finishes.
+
+### Skipping the prompt
+
+```sh
+python3 modem_capture.py --setup --adapter en5
+python3 modem_capture.py --setup --adapter a0:ce:c8:e3:bd:97   # survives a re-plug
+```
+
+Prefer the hardware address for anything you save or script. USB adapters
+don't keep a stable `enN` name — unplug one and it can come back as a
+different number.
 
 ---
 
@@ -96,6 +156,8 @@ python3 modem_capture.py 3 --note "kitchen" --skip-splitter
 | `port` (positional) | Port number; prompts if omitted |
 | `--note TEXT` | Location note; prompts if omitted |
 | `--skip-splitter` | Don't ask about splitters |
+| `--setup` | Choose a network adapter and confirm the modem is seen |
+| `--adapter NAME` | Adapter name or MAC for `--setup`, skipping the prompt |
 | `--probe` | Test connectivity and login only |
 | `--rank` | Compare captured ports |
 | `--gui` | Open the graphical version instead |

@@ -60,18 +60,54 @@ aren't code-signed yet (that costs money per year), so:
 
 ---
 
-## Step 3: Test the connection
+## Step 3: Check the adapter
+
+At the top of the window, the **Network adapter** box lists every network
+connection this computer has. Pick the one you just plugged into the modem —
+it's usually already selected, since the list puts the most likely candidate
+first.
+
+Underneath it you'll see one of two things:
+
+```
+modem traffic uses en5 - matches your selection
+```
+
+Good. Carry on to Step 4.
+
+```
+modem traffic uses en0, not en5 - click Fix Routing
+```
+
+Your computer is sending modem traffic somewhere else — almost always Wi-Fi.
+Click **Fix Routing** and it will offer to correct that; it asks for your
+password, shows you exactly what it will run, and prints the one-line undo.
+
+> You can also just **turn Wi-Fi off**, which has the same effect and needs
+> no password. Either is fine.
+
+If the adapter you expected isn't in the list at all, click **Refresh** — a
+USB adapter that isn't firmly seated won't appear.
+
+---
+
+## Step 4: Test the connection
 
 Fill in your **modem password** and click **Test Connection**.
 
 You want to see:
 
 ```
+interface : en5
 reachable : yes
 challenge : yes
 login     : SUCCESS
 5/8 actions returned usable data
 ```
+
+The `interface` line is which adapter the test actually used. If that isn't
+the one plugged into the modem, nothing else on this page will work — go back
+to Step 3.
 
 Some actions reporting `error` is **normal** — the tool asks for several
 things your particular model may not provide. As long as login succeeds and
@@ -86,7 +122,7 @@ house with the modem unplugged.
 
 ---
 
-## Step 4: Capture your first outlet
+## Step 5: Capture your first outlet
 
 In the **This port** box:
 
@@ -126,7 +162,7 @@ Then a summary. Done.
 
 ---
 
-## Step 5: Move to the next outlet
+## Step 6: Move to the next outlet
 
 1. **Unplug the modem's power.**
 2. Unscrew the coax and move the modem to the next outlet.
@@ -149,7 +185,7 @@ You don't need admin access or any special setup for this.
 
 ---
 
-## Step 6: Compare
+## Step 7: Compare
 
 Click **Compare Ports**.
 
@@ -158,7 +194,7 @@ You'll get a ranked table, best outlet first. Head to
 
 ---
 
-## Step 7: Put the modem in the best outlet
+## Step 8: Put the modem in the best outlet
 
 The winner is the outlet with the **lowest `us_pwr`** number. Move your modem
 there permanently.

@@ -15,11 +15,17 @@ python3 modem_capture.py --probe
 
 | File | Role |
 |---|---|
-| `core.py` | HNAP client, capture, parsing, ranking. All the logic. |
+| `core.py` | HNAP client, adapter/routing checks, capture, parsing, ranking. All the logic. |
 | `modem_capture.py` | Command-line interface |
 | `gui.py` | Tkinter interface |
 | `app.py` | Packaging entry point — GUI unless given arguments |
 | `mock_modem.py` | Modem simulator for testing without hardware |
+
+Adapter enumeration and routing checks shell out to platform tools
+(`networksetup`/`ifconfig`/`route` on macOS, `ip` on Linux, PowerShell on
+Windows) through `core._run()`, which swallows every failure and returns `""`.
+That is deliberate: adapter detection is a convenience, never a precondition,
+and only the macOS path is covered by hardware testing so far.
 
 Modem-specific code is confined to the `Hnap` class in `core.py`. Everything
 else is transport-agnostic, so supporting another brand means adding a class
