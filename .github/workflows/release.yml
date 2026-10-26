@@ -1,0 +1,175 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Exercise the real logic against the bundled mock modem before packaging.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile all modules
+        run: python -m compileall -q core.py modem_capture.py gui.py app.py mock_modem.py
+
+      - name: Start mock modem
+        run: |
+          MOCK_PASSWORD=testpw MOCK_PORT=8443 python mock_modem.py &
+          for i in $(seq 1 20); do
+            curl -fsS http://127.0.0.1:8443/ >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+
+      - name: Probe
+        env:
+          MODEM_PASSWORD: testpw
+          COAX_SURVEY_DIR: ${{ runner.temp }}/survey
+        run: python modem_capture.py --probe --base-url http://127.0.0.1:8443
+
+      - name: Capture, no-signal path, and rank
+        env:
+          MODEM_PASSWORD: testpw
+          COAX_SURVEY_DIR: ${{ runner.temp }}/survey
+        run: |
+          printf '0\nci baseline\ny\n1\n1\n3\ny\n' \
+            | python modem_capture.py --base-url http://127.0.0.1:8443 --wait 0
+          printf '1\nci dead\nn\n' \
+            | python modem_capture.py --base-url http://127.0.0.1:9999 --wait 0
+          python modem_capture.py --rank
+
+      - name: Assert captures parsed and nothing sensitive was written
+        env:
+          COAX_SURVEY_DIR: ${{ runner.temp }}/survey
+        run: |
+          python - <<'PY'
+          import csv, os, pathlib, re, sys
+          d = pathlib.Path(os.environ["COAX_SURVEY_DIR"])
+          rows = list(csv.DictReader((d / "summary.csv").open()))
+          ok = [r for r in rows if r["status"] == "ok"]
+          nosig = [r for r in rows if r["status"] == "no-signal"]
+          assert ok, "no successful capture recorded"
+          assert int(ok[0]["ds_channels"]) == 34, ok[0]["ds_channels"]
+          assert int(ok[0]["us_channels"]) == 5, ok[0]["us_channels"]
+          assert ok[0]["expected_loss_db"] == "3.5", ok[0]["expected_loss_db"]
+          assert nosig, "no-signal path did not record a row"
+          # redaction guard: no 32-char hex (HNAP hash material) on disk
+          leaks = []
+          for f in (d / "raw").glob("*.json"):
+              if re.search(r"[0-9A-F]{32}", f.read_text()):
+                  leaks.append(f.name)
+          assert not leaks, f"credential material found in {leaks}"
+          print(f"OK: {len(ok)} captured, {len(nosig)} no-signal, no leaks")
+          PY
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            label: macos-arm64
+          - os: macos-13
+            label: macos-x86_64
+          - os: ubuntu-22.04
+            label: linux-x86_64
+          - os: windows-latest
+            label: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      # macOS/Windows: windowed app so double-clicking opens the GUI with no
+      # stray console. Linux: a plain one-file binary (AppImage is future work).
+      # onedir, not onefile: PyInstaller deprecated onefile+windowed on macOS
+      # (a .app cannot be a single file, and it fights Gatekeeper). It becomes
+      # a hard error in PyInstaller 7. -y preserves the bundle's symlinks.
+      - name: Build (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          pyinstaller --noconfirm --clean --onedir --windowed \
+            --name CoaxSurvey app.py
+          cd dist && zip -ry "CoaxSurvey-${{ matrix.label }}.zip" CoaxSurvey.app
+
+      - name: Build (Windows)
+        if: startsWith(matrix.os, 'windows')
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --name CoaxSurvey app.py
+          cd dist
+          Move-Item CoaxSurvey.exe "CoaxSurvey-${{ matrix.label }}.exe"
+
+      - name: Build (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          pyinstaller --noconfirm --clean --onefile --name CoaxSurvey app.py
+          cd dist && mv CoaxSurvey "CoaxSurvey-${{ matrix.label }}"
+
+      - name: Smoke-test the binary
+        shell: bash
+        run: |
+          set -e
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            BIN="dist/CoaxSurvey.app/Contents/MacOS/CoaxSurvey"
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            BIN="dist/CoaxSurvey-${{ matrix.label }}.exe"
+          else
+            BIN="dist/CoaxSurvey-${{ matrix.label }}"
+          fi
+          # No modem present, so --probe must exit 2 and say so, not crash.
+          set +e
+          OUT=$("$BIN" --probe --base-url http://127.0.0.1:9999 2>&1)
+          CODE=$?
+          set -e
+          echo "$OUT"
+          test $CODE -eq 2 || { echo "expected exit 2, got $CODE"; exit 1; }
+          echo "$OUT" | grep -qi "no signal" || { echo "missing no-signal text"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CoaxSurvey-${{ matrix.label }}
+          path: |
+            dist/CoaxSurvey-${{ matrix.label }}*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            Downloads below. These builds are **not code-signed yet**, so:
+
+            - **macOS**: unzip, then right-click the app and choose *Open*
+              (Gatekeeper blocks a plain double-click on first run). Or run
+              `xattr -dr com.apple.quarantine CoaxSurvey.app`.
+            - **Windows**: SmartScreen will warn. Choose *More info* →
+              *Run anyway*.
+            - **Linux**: `chmod +x CoaxSurvey-linux-x86_64` then run it.
+
+            Plug your computer into the cable modem by Ethernet before
+            starting. See the README for the full walkthrough.

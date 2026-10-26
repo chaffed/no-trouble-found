@@ -1,0 +1,21 @@
+# Survey output -- never commit your own modem data
+summary.csv
+survey.log
+port-*.txt
+raw/
+probe-*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build
+build/
+dist/
+*.spec
+
+# OS
+.DS_Store
+Thumbs.db
