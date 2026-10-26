@@ -46,12 +46,16 @@ networking knowledge.
 2. **Plug your computer into the cable modem** with an Ethernet cable.
    (This is required — the modem's status page can't be reached through your
    router.)
-3. **Open the app** and click **Test Connection**.
-4. **Capture your first outlet** — leave the port number at `0`, type a note
+3. **Open the app.** Check the **Network adapter** box at the top — it
+   should already have the adapter you plugged in selected, and say it
+   matches. If it says otherwise, click **Fix Routing** (or just turn Wi-Fi
+   off).
+4. **Click Test Connection.**
+5. **Capture your first outlet** — leave the port number at `0`, type a note
    like "living room", and click **Capture Port**.
-5. **Move the modem** to the next outlet, plug it in, wait for it to come
+6. **Move the modem** to the next outlet, plug it in, wait for it to come
    online, and capture again.
-6. **Click Compare Ports** when you've done them all.
+7. **Click Compare Ports** when you've done them all.
 
 Full walkthrough with pictures of what to expect:
 **[docs/QUICKSTART.md](docs/QUICKSTART.md)**
